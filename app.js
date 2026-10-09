@@ -1,674 +1,606 @@
-
 document.addEventListener("DOMContentLoaded", () => {
   "use strict";
 
-  // =========================================================
+  // ------------------------------------------
   // CONFIGURATION
-  // =========================================================
+  // ------------------------------------------
+
+  const FREE_EMAIL_LIMIT = 100;
+  const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+  const COUNTER_KEY = "email_counter";
+  const RESET_KEY = "last_reset_time";
+
+  const OWNER_KEY = "cle_secrete_proprietaire";
+  const OWNER_SECRET = "MonCodeSuperSecret123!";
 
   const PAYMENT_URL =
     "https://emailcheckpro.lemonsqueezy.com/checkout/buy/cf58e559-a415-4635-addd-53987ffede12";
 
-  const FREE_EMAIL_LIMIT = 100;
-  const RESET_INTERVAL = 24 * 60 * 60 * 1000;
+  const emailRegex =
+    /^(?=.{1,254}$)(?=.{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{2,59})$/;
 
-  const COUNTER_KEY = "email_counter";
-  const RESET_TIME_KEY = "last_reset_time";
+  const knownTypos = {
+    "gamil.com": "gmail.com",
+    "gamil.cm": "gmail.com",
+    "gmial.com": "gmail.com",
+    "gmail.con": "gmail.com",
+    "gmai.com": "gmail.com",
+    "yaho.com": "yahoo.com",
+    "yahoo.con": "yahoo.com",
+    "hotmial.com": "hotmail.com",
+    "outlok.com": "outlook.com"
+  };
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-  // =========================================================
-  // ÉLÉMENTS HTML
-  // =========================================================
-
-  const emailInput = document.querySelector("#emailInput");
-  const btnVerify = document.querySelector("#btnVerify");
-  const btnClear = document.querySelector("#btnClear");
-
-  const statsSection = document.querySelector("#statsSection");
-  const validPercentage = document.querySelector("#validPercentage");
-  const progressBar = document.querySelector("#progressBar");
-  const totalInfo = document.querySelector("#totalInfo");
-
-  const resultSection = document.querySelector("#resultSection");
-
-  const validCount = document.querySelector("#validCount");
-  const validList = document.querySelector("#validList");
-
-  const invalidCount = document.querySelector("#invalidCount");
-  const invalidList = document.querySelector("#invalidList");
-
-  const btnExportTxt = document.querySelector("#btnExportTxt");
-  const btnExportCsv = document.querySelector("#btnExportCsv");
-  const btnCopyInvalid = document.querySelector("#btnCopyInvalid");
-
-  const statusMessage = document.querySelector("#statusMessage");
-
-  // =========================================================
-  // VÉRIFICATION DES ÉLÉMENTS HTML
-  // =========================================================
-
-  const requiredElements = [
-    emailInput,
-    btnVerify,
-    btnClear,
-    statsSection,
-    validPercentage,
-    progressBar,
-    totalInfo,
-    resultSection,
-    validCount,
-    validList,
-    invalidCount,
-    invalidList,
-    btnExportTxt,
-    btnExportCsv,
-    btnCopyInvalid,
-    statusMessage
+  const fallbackDisposableDomains = [
+    "yopmail.com",
+    "yopmail.fr",
+    "tempmail.com",
+    "temp-mail.org",
+    "guerrillamail.com",
+    "mailinator.com",
+    "10minutemail.com",
+    "throwawaymail.com",
+    "getnada.com"
   ];
 
-  for (let i = 0; i < requiredElements.length; i++) {
-    if (!requiredElements[i]) {
-      console.error(
-        "Email Cleaner : un élément HTML requis est introuvable. Vérifie les identifiants dans index.html."
-      );
-      return;
-    }
-  }
-
-  // =========================================================
-  // DONNÉES
-  // =========================================================
+  let disposableDomains = new Set(fallbackDisposableDomains);
 
   let validEmails = [];
   let invalidEmails = [];
+  let isProcessing = false;
 
-  // =========================================================
-  // LOCALSTORAGE : COMPTEUR ET RÉINITIALISATION
-  // =========================================================
+  // ------------------------------------------
+  // ELEMENTS HTML
+  // ------------------------------------------
 
-  function getStoredCounter() {
-    const value = localStorage.getItem(COUNTER_KEY);
+  const emailInput = document.getElementById("emailInput");
+  const btnVerify = document.getElementById("btnVerify");
+  const btnClear = document.getElementById("btnClear");
+  const btnCopyValid = document.getElementById("btnCopyValid");
+  const btnCopyInvalid = document.getElementById("btnCopyInvalid");
+  const btnExportTxt = document.getElementById("btnExportTxt");
+  const btnExportCsv = document.getElementById("btnExportCsv");
+  const btnUpgrade = document.getElementById("btnUpgrade");
 
-    if (value === null || value.trim() === "") {
-      return 0;
-    }
+  const statsSection = document.getElementById("statsSection");
+  const resultSection = document.getElementById("resultSection");
+  const validPercentage = document.getElementById("validPercentage");
+  const progressBar = document.getElementById("progressBar");
+  const totalInfo = document.getElementById("totalInfo");
+  const validCount = document.getElementById("validCount");
+  const invalidCount = document.getElementById("invalidCount");
+  const validList = document.getElementById("validList");
+  const invalidList = document.getElementById("invalidList");
+  const statusMessage = document.getElementById("statusMessage");
+  const quotaInfo = document.getElementById("quotaInfo");
 
-    const counter = Number(value);
+  // ------------------------------------------
+  // MODE PROPRIÉTAIRE
+  // ------------------------------------------
 
-    if (
-      !Number.isFinite(counter) ||
-      !Number.isInteger(counter) ||
-      counter < 0
-    ) {
-      return 0;
-    }
-
-    return counter;
+  function isOwner() {
+    return localStorage.getItem(OWNER_KEY) === OWNER_SECRET;
   }
 
-  function getStoredResetTime() {
-    const value = localStorage.getItem(RESET_TIME_KEY);
+  // IMPORTANT :
+  // Ce mode est seulement un raccourci local.
+  // Il n'est pas sécurisé : un utilisateur peut
+  // lire le code et modifier son localStorage.
+  // La route DNS conserve sa limite par requête.
 
-    if (value === null || value.trim() === "") {
-      return null;
-    }
-
-    const timestamp = Number(value);
-
-    if (
-      !Number.isFinite(timestamp) ||
-      !Number.isInteger(timestamp) ||
-      timestamp <= 0
-    ) {
-      return null;
-    }
-
-    return timestamp;
-  }
+  // ------------------------------------------
+  // QUOTA GRATUIT : 100 ADRESSES / 24 H
+  // ------------------------------------------
 
   function initializeFreeLimit() {
     const now = Date.now();
 
-    const lastResetTime = getStoredResetTime();
-    const counter = getStoredCounter();
+    let counter = Number(localStorage.getItem(COUNTER_KEY));
+    let resetTime = Number(localStorage.getItem(RESET_KEY));
 
-    // Première utilisation ou timestamp invalide.
-    if (lastResetTime === null) {
-      localStorage.setItem(COUNTER_KEY, "0");
-      localStorage.setItem(RESET_TIME_KEY, String(now));
-
-      return {
-        counter: 0,
-        resetTime: now
-      };
+    if (!Number.isFinite(counter) || counter < 0) {
+      counter = 0;
     }
 
-    // Réinitialisation après 24 heures.
-    if (
-      now < lastResetTime ||
-      now - lastResetTime >= RESET_INTERVAL
-    ) {
+    if (!Number.isFinite(resetTime) || resetTime <= 0) {
+      resetTime = now;
+      counter = 0;
       localStorage.setItem(COUNTER_KEY, "0");
-      localStorage.setItem(RESET_TIME_KEY, String(now));
-
-      return {
-        counter: 0,
-        resetTime: now
-      };
+      localStorage.setItem(RESET_KEY, String(resetTime));
     }
 
-    // Corriger un compteur absent ou invalide.
-    const safeCounter = Math.min(counter, FREE_EMAIL_LIMIT);
+    if (now - resetTime >= WINDOW_MS) {
+      counter = 0;
+      resetTime = now;
+      localStorage.setItem(COUNTER_KEY, "0");
+      localStorage.setItem(RESET_KEY, String(resetTime));
+    }
 
-    localStorage.setItem(
-      COUNTER_KEY,
-      String(safeCounter)
-    );
-
-    return {
-      counter: safeCounter,
-      resetTime: lastResetTime
-    };
+    return { counter, resetTime };
   }
 
   function saveUsage(counter, resetTime) {
     localStorage.setItem(COUNTER_KEY, String(counter));
-    localStorage.setItem(RESET_TIME_KEY, String(resetTime));
+    localStorage.setItem(RESET_KEY, String(resetTime));
   }
 
-  // =========================================================
-  // PAYWALL LEMON SQUEEZY
-  // =========================================================
+  function updateQuotaDisplay() {
+    if (isOwner()) {
+      quotaInfo.textContent =
+        "Mode propriétaire local activé. Ce mode n'est pas une protection sécurisée.";
+      return;
+    }
 
-  function showPaywall(currentUsage, requestedCount) {
-    const remaining = Math.max(
-      0,
-      FREE_EMAIL_LIMIT - currentUsage
+    const usage = initializeFreeLimit();
+    const remaining = Math.max(0, FREE_EMAIL_LIMIT - usage.counter);
+    const resetDate = new Date(usage.resetTime + WINDOW_MS);
+
+    quotaInfo.textContent =
+      `Utilisation : ${usage.counter}/${FREE_EMAIL_LIMIT}. ` +
+      `Restant : ${remaining}. Réinitialisation après : ` +
+      resetDate.toLocaleString();
+  }
+
+  function showPaywall() {
+    statusMessage.textContent =
+      "Limite gratuite atteinte. Débloque l'accès pour continuer.";
+
+    const shouldOpen = window.confirm(
+      "Tu as atteint la limite gratuite de 100 e-mails sur 24 heures. " +
+      "Veux-tu ouvrir la page de paiement ?"
     );
 
-    const message =
-      "Limite gratuite atteinte !\n\n" +
-      "Votre quota est de " +
-      FREE_EMAIL_LIMIT +
-      " e-mails par période de 24 heures.\n\n" +
-      "E-mails déjà analysés : " +
-      currentUsage +
-      "\n" +
-      "E-mails dans cette demande : " +
-      requestedCount +
-      "\n" +
-      "E-mails encore disponibles : " +
-      remaining +
-      "\n\n" +
-      "Voulez-vous ouvrir la page de paiement ?";
-
-    statusMessage.textContent =
-      "Analyse bloquée : limite gratuite dépassée.";
-
-    if (window.confirm(message)) {
-      window.location.href = PAYMENT_URL;
+    if (shouldOpen) {
+      window.open(PAYMENT_URL, "_blank", "noopener,noreferrer");
     }
   }
 
-  // =========================================================
-  // EXTRACTION DES E-MAILS
-  // =========================================================
+  // ------------------------------------------
+  // CHARGEMENT DE LA LISTE DES DOMAINES JETABLES
+  // ------------------------------------------
+
+  async function loadDisposableDomains() {
+    try {
+      const response = await fetch("./data/disposable-domains.json");
+
+      if (!response.ok) {
+        throw new Error("Liste locale indisponible");
+      }
+
+      const domains = await response.json();
+
+      if (Array.isArray(domains)) {
+        disposableDomains = new Set([
+          ...fallbackDisposableDomains,
+          ...domains
+        ].map((domain) => String(domain).trim().toLowerCase()));
+      }
+    } catch (error) {
+      // Le tableau de secours reste disponible.
+      console.warn("Utilisation de la liste jetable intégrée.");
+    }
+  }
+
+  // ------------------------------------------
+  // LECTURE DE LA LISTE FOURNIE
+  // ------------------------------------------
 
   function getEmailsFromInput() {
     return emailInput.value
       .split(/[\n,;]+/)
-      .map(function (email) {
-        return email.trim();
-      })
-      .filter(function (email) {
-        return email.length > 0;
-      });
+      .map((email) => email.trim())
+      .filter(Boolean);
   }
 
-  // =========================================================
-  // SUPPRESSION DES DOUBLONS
-  // =========================================================
+  // ------------------------------------------
+  // SYNTAXE ET RAISONS DE REJET
+  // ------------------------------------------
 
-  function removeDuplicates(emails) {
-    const seen = {};
-    const uniqueEmails = [];
-
-    for (let i = 0; i < emails.length; i++) {
-      const email = emails[i];
-      const normalized = email.toLowerCase();
-
-      if (!Object.prototype.hasOwnProperty.call(seen, normalized)) {
-        seen[normalized] = true;
-        uniqueEmails.push(email);
-      }
+  function getSyntaxReason(email) {
+    if ((email.match(/@/g) || []).length > 1) {
+      return "Plusieurs caractères @";
     }
 
-    return uniqueEmails;
+    if (!email.includes("@")) {
+      return "Caractère @ manquant";
+    }
+
+    const parts = email.split("@");
+
+    if (!parts[0] || !parts[1]) {
+      return "Partie avant ou après @ manquante";
+    }
+
+    if (!/\.[A-Za-z]{2,63}$/.test(email)) {
+      return "Extension manquante ou incorrecte";
+    }
+
+    if (email.includes("..")) {
+      return "Points consécutifs interdits";
+    }
+
+    return "Syntaxe incorrecte";
   }
 
-  // =========================================================
-  // VALIDATION
-  // =========================================================
+  function classifyInput(emails) {
+    const uniqueEmails = [];
+    const rejected = [];
+    const seen = new Set();
 
-  function isValidEmail(email) {
-    return emailRegex.test(email);
+    for (const originalEmail of emails) {
+      const email = originalEmail.trim();
+      const normalized = email.toLowerCase();
+
+      if (!emailRegex.test(email)) {
+        rejected.push({
+          email,
+          reason: getSyntaxReason(email),
+          status: "invalid"
+        });
+        continue;
+      }
+
+      const domain = normalized.split("@")[1];
+
+      if (knownTypos[domain]) {
+        rejected.push({
+          email,
+          reason: `Domaine suspect. Vérifie si tu voulais écrire ${knownTypos[domain]}.`,
+          status: "invalid"
+        });
+        continue;
+      }
+
+      if (disposableDomains.has(domain)) {
+        rejected.push({
+          email,
+          reason: "Domaine e-mail jetable connu",
+          status: "invalid"
+        });
+        continue;
+      }
+
+      if (seen.has(normalized)) {
+        rejected.push({
+          email,
+          reason: "Doublon supprimé",
+          status: "invalid"
+        });
+        continue;
+      }
+
+      seen.add(normalized);
+      uniqueEmails.push(email);
+    }
+
+    return { uniqueEmails, rejected };
   }
 
-  // =========================================================
-  // AFFICHAGE DES LISTES
-  // =========================================================
+  // ------------------------------------------
+  // VÉRIFICATION DNS VIA LA ROUTE VERCEL
+  // ------------------------------------------
 
-  function renderEmailList(container, emails, emptyMessage) {
-    container.innerHTML = "";
+  async function verifyEmailsWithDNS(emails) {
+    const allResults = [];
 
-    if (emails.length === 0) {
-      const item = document.createElement("li");
+    // La route accepte au maximum 100 adresses par requête.
+    for (let start = 0; start < emails.length; start += 100) {
+      const batch = emails.slice(start, start + 100);
 
-      item.className = "empty-message";
-      item.textContent = emptyMessage;
+      const response = await fetch("/api/check-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ emails: batch })
+      });
 
-      container.appendChild(item);
+      if (!response.ok) {
+        throw new Error(
+          "La vérification DNS a échoué. Vérifie le déploiement Vercel."
+        );
+      }
+
+      const data = await response.json();
+
+      if (!Array.isArray(data.results)) {
+        throw new Error("Réponse DNS invalide.");
+      }
+
+      allResults.push(...data.results);
+    }
+
+    return allResults;
+  }
+
+  // ------------------------------------------
+  // AFFICHAGE SÉCURISÉ DES LISTES
+  // ------------------------------------------
+
+  function renderValidEmails(emails) {
+    validList.replaceChildren();
+
+    for (const email of emails) {
+      const li = document.createElement("li");
+      li.dataset.email = email;
+      li.textContent = email;
+      validList.appendChild(li);
+    }
+  }
+
+  function renderInvalidEmails(items) {
+    invalidList.replaceChildren();
+
+    for (const item of items) {
+      const li = document.createElement("li");
+      const address = document.createElement("span");
+      const reason = document.createElement("small");
+
+      address.textContent = item.email;
+      reason.className = "reason";
+      reason.textContent = item.reason;
+
+      li.append(address, reason);
+      invalidList.appendChild(li);
+    }
+  }
+
+  function renderStats(total) {
+    const good = validEmails.length;
+    const rejected = invalidEmails.length;
+    const percentage = total === 0 ? 0 : Math.round((good / total) * 100);
+
+    totalInfo.textContent = String(total);
+    validCount.textContent = String(good);
+    invalidCount.textContent = String(rejected);
+    validPercentage.textContent = `${percentage}%`;
+    progressBar.style.width = `${percentage}%`;
+
+    statsSection.hidden = false;
+    resultSection.hidden = false;
+  }
+
+  // ------------------------------------------
+  // VÉRIFICATION PRINCIPALE
+  // ------------------------------------------
+
+  async function verifyEmails() {
+    if (isProcessing) return;
+
+    const submittedEmails = getEmailsFromInput();
+
+    if (submittedEmails.length === 0) {
+      statusMessage.textContent = "Colle d'abord des adresses e-mail.";
       return;
     }
 
-    for (let i = 0; i < emails.length; i++) {
-      const item = document.createElement("li");
+    const ownerMode = isOwner();
+    let usage = null;
 
-      // textContent empêche l'interprétation du contenu comme HTML.
-      item.textContent = emails[i];
+    // Le quota compte toutes les adresses non vides soumises,
+    // avant la suppression des doublons.
+    if (!ownerMode) {
+      usage = initializeFreeLimit();
 
-      container.appendChild(item);
-    }
-  }
-
-  // =========================================================
-  // STATISTIQUES
-  // =========================================================
-
-  function updateStatistics(total) {
-    let percentage = 0;
-
-    if (total > 0) {
-      percentage = (validEmails.length / total) * 100;
+      if (usage.counter + submittedEmails.length > FREE_EMAIL_LIMIT) {
+        showPaywall();
+        updateQuotaDisplay();
+        return;
+      }
     }
 
-    const roundedPercentage = Math.round(percentage * 10) / 10;
+    isProcessing = true;
+    btnVerify.disabled = true;
+    btnVerify.textContent = "Vérification en cours...";
+    statusMessage.textContent =
+      "Contrôle de la syntaxe, des doublons, des domaines et des enregistrements DNS...";
 
-    validPercentage.textContent = roundedPercentage + "%";
-    progressBar.style.width = roundedPercentage + "%";
-
-    const progressTrack = progressBar.parentElement;
-
-    if (progressTrack) {
-      progressTrack.setAttribute(
-        "aria-valuenow",
-        String(roundedPercentage)
-      );
-    }
-
-    if (total === 1) {
-      totalInfo.textContent = "1 e-mail analysé";
-    } else {
-      totalInfo.textContent = total + " e-mails analysés";
-    }
-  }
-
-  function updateResults(total) {
-    validCount.textContent = String(validEmails.length);
-    invalidCount.textContent = String(invalidEmails.length);
-
-    renderEmailList(
-      validList,
-      validEmails,
-      "Aucun e-mail valide."
-    );
-
-    renderEmailList(
-      invalidList,
-      invalidEmails,
-      "Aucun e-mail invalide."
-    );
-
-    updateStatistics(total);
-
-    statsSection.style.display = "block";
-    resultSection.style.display = "block";
-  }
-
-  // =========================================================
-  // VÉRIFICATION PRINCIPALE
-  // =========================================================
-
-  function verifyEmails() {
-    let inputEmails;
-
-    // Vérifier le stockage avant de consommer le quota.
     try {
-      inputEmails = getEmailsFromInput();
+      await loadDisposableDomains();
 
-      if (inputEmails.length === 0) {
+      const classified = classifyInput(submittedEmails);
+      const syntaxRejected = classified.rejected;
+
+      let dnsResults;
+
+      try {
+        dnsResults = await verifyEmailsWithDNS(classified.uniqueEmails);
+      } catch (dnsError) {
+        // Si le serveur DNS ne répond pas, ne prétends pas
+        // que les adresses ont été vérifiées.
+        validEmails = [];
+        invalidEmails = [
+          ...syntaxRejected,
+          ...classified.uniqueEmails.map((email) => ({
+            email,
+            reason: "Résultat inconnu : vérification DNS indisponible",
+            status: "unknown"
+          }))
+        ];
+
+        renderValidEmails(validEmails);
+        renderInvalidEmails(invalidEmails);
+        renderStats(classified.uniqueEmails.length + syntaxRejected.length);
+
         statusMessage.textContent =
-          "Veuillez saisir au moins une adresse e-mail.";
+          "La vérification DNS n'a pas abouti. Les adresses non vérifiées " +
+          "ne sont pas déclarées valides. Vérifie que la route API est déployée.";
+
         return;
       }
 
-      const usage = initializeFreeLimit();
-      const currentCounter = usage.counter;
-      const resetTime = usage.resetTime;
-      const requestedCount = inputEmails.length;
+      validEmails = [];
+      invalidEmails = [...syntaxRejected];
 
-      // Refuser toute demande qui dépasse le quota restant.
-      if (
-        currentCounter + requestedCount >
-        FREE_EMAIL_LIMIT
-      ) {
-        showPaywall(currentCounter, requestedCount);
-        return;
-      }
-
-      // Nettoyer et classer les adresses.
-      const uniqueEmails = removeDuplicates(inputEmails);
-      const newValidEmails = [];
-      const newInvalidEmails = [];
-
-      for (let i = 0; i < uniqueEmails.length; i++) {
-        const email = uniqueEmails[i];
-
-        if (isValidEmail(email)) {
-          newValidEmails.push(email);
+      for (const result of dnsResults) {
+        if (result.status === "valid") {
+          validEmails.push(result.email);
         } else {
-          newInvalidEmails.push(email);
+          invalidEmails.push({
+            email: result.email,
+            reason: result.reason || "Vérification impossible",
+            status: result.status || "unknown"
+          });
         }
       }
 
-      // Le quota compte chaque entrée non vide, doublons inclus.
-      const newCounter = currentCounter + requestedCount;
-
-      saveUsage(newCounter, resetTime);
-
-      // Publier les résultats après l'enregistrement du quota.
-      validEmails = newValidEmails;
-      invalidEmails = newInvalidEmails;
-
-      updateResults(uniqueEmails.length);
+      renderValidEmails(validEmails);
+      renderInvalidEmails(invalidEmails);
+      renderStats(classified.uniqueEmails.length + syntaxRejected.length);
 
       statusMessage.textContent =
-        uniqueEmails.length +
-        " adresse(s) unique(s) affichée(s). " +
-        requestedCount +
-        " e-mail(s) consommé(s). Quota : " +
-        newCounter +
-        "/" +
-        FREE_EMAIL_LIMIT +
-        ".";
-    } catch (error) {
-      console.error("Erreur pendant la vérification :", error);
+        `Terminé : ${validEmails.length} adresse(s) retenue(s), ` +
+        `${invalidEmails.length} adresse(s) rejetée(s) ou à vérifier.`;
 
-      statusMessage.textContent =
-        "Impossible de vérifier les e-mails. Vérifie que le stockage local de ton navigateur est activé.";
-    }
-  }
-
-  // =========================================================
-  // EFFACER L'INTERFACE
-  // =========================================================
-
-  function clearApplication() {
-    emailInput.value = "";
-
-    validEmails = [];
-    invalidEmails = [];
-
-    validCount.textContent = "0";
-    invalidCount.textContent = "0";
-
-    renderEmailList(
-      validList,
-      [],
-      "Aucun résultat pour le moment."
-    );
-
-    renderEmailList(
-      invalidList,
-      [],
-      "Aucun résultat pour le moment."
-    );
-
-    validPercentage.textContent = "0%";
-    progressBar.style.width = "0%";
-
-    const progressTrack = progressBar.parentElement;
-
-    if (progressTrack) {
-      progressTrack.setAttribute("aria-valuenow", "0");
-    }
-
-    totalInfo.textContent = "0 e-mail analysé";
-
-    statsSection.style.display = "none";
-    resultSection.style.display = "none";
-
-    statusMessage.textContent = "";
-
-    // Le bouton Effacer ne réinitialise jamais le quota.
-    emailInput.focus();
-  }
-
-  // =========================================================
-  // TÉLÉCHARGEMENT DE FICHIERS
-  // =========================================================
-
-  function downloadFile(content, filename, mimeType) {
-    const blob = new Blob(
-      [content],
-      {
-        type: mimeType + ";charset=utf-8"
+      // Enregistrer le quota après le traitement.
+      if (!ownerMode && usage) {
+        saveUsage(
+          usage.counter + submittedEmails.length,
+          usage.resetTime
+        );
       }
-    );
+    } catch (error) {
+      console.error(error);
+      statusMessage.textContent =
+        "Une erreur est survenue pendant le traitement. Réessaie.";
+    } finally {
+      isProcessing = false;
+      btnVerify.disabled = false;
+      btnVerify.textContent = "Vérifier les e-mails";
+      updateQuotaDisplay();
+    }
+  }
 
+  // ------------------------------------------
+  // COPIE D'UNE LISTE
+  // ------------------------------------------
+
+  async function copyText(text, emptyMessage, successMessage) {
+    if (!text.trim()) {
+      statusMessage.textContent = emptyMessage;
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      statusMessage.textContent = successMessage;
+    } catch (error) {
+      statusMessage.textContent =
+        "Copie impossible. Vérifie les permissions du navigateur.";
+    }
+  }
+
+  btnCopyValid.addEventListener("click", () => {
+    copyText(
+      validEmails.join("\n"),
+      "Aucun e-mail valide à copier.",
+      `${validEmails.length} e-mail(s) valide(s) copié(s).`
+    );
+  });
+
+  btnCopyInvalid.addEventListener("click", () => {
+    copyText(
+      invalidEmails.map((item) => item.email).join("\n"),
+      "Aucun e-mail rejeté à copier.",
+      `${invalidEmails.length} résultat(s) copié(s).`
+    );
+  });
+
+  // ------------------------------------------
+  // EXPORT TXT
+  // ------------------------------------------
+
+  function downloadFile(filename, content, type) {
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
 
     link.href = url;
     link.download = filename;
-
     document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
+    link.remove();
 
-    window.setTimeout(function () {
-      URL.revokeObjectURL(url);
-    }, 1000);
+    URL.revokeObjectURL(url);
   }
 
-  // =========================================================
-  // EXPORT TXT
-  // =========================================================
-
-  function exportValidEmailsAsTxt() {
-    if (validEmails.length === 0) {
-      statusMessage.textContent =
-        "Aucun e-mail valide à exporter.";
-      return;
-    }
-
+  btnExportTxt.addEventListener("click", () => {
     downloadFile(
-      validEmails.join("\r\n"),
       "emails-valides.txt",
-      "text/plain"
+      validEmails.join("\n"),
+      "text/plain;charset=utf-8"
     );
-
-    statusMessage.textContent =
-      validEmails.length +
-      " e-mail(s) valide(s) exporté(s) en TXT.";
-  }
-
-  // =========================================================
-  // EXPORT CSV POUR EXCEL
-  // =========================================================
-
-  function escapeCsvCell(value) {
-    const text = String(value);
-
-    if (
-      text.indexOf(",") !== -1 ||
-      text.indexOf('"') !== -1 ||
-      text.indexOf("\n") !== -1 ||
-      text.indexOf("\r") !== -1
-    ) {
-      return '"' + text.replace(/"/g, '""') + '"';
-    }
-
-    return text;
-  }
-
-  function exportValidEmailsAsCsv() {
-    if (validEmails.length === 0) {
-      statusMessage.textContent =
-        "Aucun e-mail valide à exporter.";
-      return;
-    }
-
-    const rows = [escapeCsvCell("email")];
-
-    for (let i = 0; i < validEmails.length; i++) {
-      rows.push(escapeCsvCell(validEmails[i]));
-    }
-
-    const csvContent = "\uFEFF" + rows.join("\r\n");
-
-    downloadFile(
-      csvContent,
-      "emails-valides.csv",
-      "text/csv"
-    );
-
-    statusMessage.textContent =
-      validEmails.length +
-      " e-mail(s) valide(s) exporté(s) en CSV.";
-  }
-
-  // =========================================================
-  // COPIER LES E-MAILS INVALIDES
-  // =========================================================
-
-  function copyInvalidEmails() {
-    if (invalidEmails.length === 0) {
-      statusMessage.textContent =
-        "Aucun e-mail invalide à copier.";
-      return;
-    }
-
-    const content = invalidEmails.join("\r\n");
-
-    // API moderne du presse-papiers.
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(content)
-        .then(function () {
-          statusMessage.textContent =
-            invalidEmails.length +
-            " e-mail(s) invalide(s) copié(s).";
-        })
-        .catch(function () {
-          fallbackCopy(content);
-        });
-
-      return;
-    }
-
-    fallbackCopy(content);
-  }
-
-  function fallbackCopy(content) {
-    const temporaryTextarea = document.createElement("textarea");
-
-    temporaryTextarea.value = content;
-    temporaryTextarea.setAttribute("readonly", "");
-
-    temporaryTextarea.style.position = "fixed";
-    temporaryTextarea.style.left = "-9999px";
-    temporaryTextarea.style.top = "0";
-
-    document.body.appendChild(temporaryTextarea);
-
-    temporaryTextarea.focus();
-    temporaryTextarea.select();
-
-    let copied = false;
-
-    try {
-      copied = document.execCommand("copy");
-    } catch (error) {
-      copied = false;
-    }
-
-    document.body.removeChild(temporaryTextarea);
-
-    if (copied) {
-      statusMessage.textContent =
-        invalidEmails.length +
-        " e-mail(s) invalide(s) copié(s).";
-    } else {
-      statusMessage.textContent =
-        "Copie impossible. Sélectionne les adresses manuellement.";
-    }
-  }
-
-  // =========================================================
-  // ÉVÉNEMENTS
-  // =========================================================
-
-  btnVerify.addEventListener("click", verifyEmails);
-
-  btnClear.addEventListener("click", clearApplication);
-
-  btnExportTxt.addEventListener(
-    "click",
-    exportValidEmailsAsTxt
-  );
-
-  btnExportCsv.addEventListener(
-    "click",
-    exportValidEmailsAsCsv
-  );
-
-  btnCopyInvalid.addEventListener(
-    "click",
-    copyInvalidEmails
-  );
-
-  emailInput.addEventListener("keydown", function (event) {
-    if (event.ctrlKey && event.key === "Enter") {
-      event.preventDefault();
-      verifyEmails();
-    }
   });
 
-  // =========================================================
-  // INITIALISATION
-  // =========================================================
+  // ------------------------------------------
+  // EXPORT CSV
+  // ------------------------------------------
 
-  try {
-    initializeFreeLimit();
-
-    renderEmailList(
-      validList,
-      [],
-      "Aucun résultat pour le moment."
-    );
-
-    renderEmailList(
-      invalidList,
-      [],
-      "Aucun résultat pour le moment."
-    );
-  } catch (error) {
-    console.error("Erreur LocalStorage :", error);
-
-    statusMessage.textContent =
-      "Le stockage local est indisponible. Active-le dans ton navigateur puis recharge la page.";
-
-    btnVerify.disabled = true;
+  function escapeCsv(value) {
+    return `"${String(value).replace(/"/g, '""')}"`;
   }
+
+  btnExportCsv.addEventListener("click", () => {
+    const rows = [
+      ["Email", "Statut", "Raison"],
+      ...validEmails.map((email) => [
+        email,
+        "Retenu",
+        "Syntaxe et contrôle DNS réussis"
+      ]),
+      ...invalidEmails.map((item) => [
+        item.email,
+        item.status || "invalid",
+        item.reason
+      ])
+    ];
+
+    const csv = rows
+      .map((row) => row.map(escapeCsv).join(","))
+      .join("\r\n");
+
+    downloadFile(
+      "rapport-emailcheckpro.csv",
+      "\uFEFF" + csv,
+      "text/csv;charset=utf-8"
+    );
+  });
+
+  // ------------------------------------------
+  // EFFACER : NE TOUCHE PAS AU QUOTA
+  // ------------------------------------------
+
+  btnClear.addEventListener("click", () => {
+    emailInput.value = "";
+    validEmails = [];
+    invalidEmails = [];
+
+    validList.replaceChildren();
+    invalidList.replaceChildren();
+
+    statsSection.hidden = true;
+    resultSection.hidden = true;
+    statusMessage.textContent = "";
+
+    updateQuotaDisplay();
+  });
+
+  // ------------------------------------------
+  // PAIEMENT
+  // ------------------------------------------
+
+  btnUpgrade.addEventListener("click", () => {
+    window.open(PAYMENT_URL, "_blank", "noopener,noreferrer");
+  });
+
+  // ------------------------------------------
+  // INITIALISATION
+  // ------------------------------------------
+
+  if (!isOwner()) {
+    initializeFreeLimit();
+  }
+
+  updateQuotaDisplay();
 });
